@@ -16,6 +16,7 @@ mod middleware;
 pub struct AppState {
     pub pool: sqlx::PgPool,
     pub secret: Vec<u8>,
+    pub is_production: bool,
 }
 
 #[tokio::main]
@@ -40,16 +41,19 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
+    let is_production = cfg.is_production();
+
     let state = AppState {
         pool,
         secret: cfg.secret,
+        is_production,
     };
 
-    let allowed_origins = [
-        "http://localhost:5173".parse::<HeaderValue>().unwrap(),
-        "http://localhost:3000".parse::<HeaderValue>().unwrap(),
-        "http://localhost:3001".parse::<HeaderValue>().unwrap(),
-    ];
+    let allowed_origins: Vec<HeaderValue> = cfg
+        .cors_origins
+        .iter()
+        .map(|o| o.parse::<HeaderValue>().expect("invalid CORS origin"))
+        .collect();
     let cors = CorsLayer::new()
         .allow_origin(allowed_origins)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
@@ -61,14 +65,14 @@ async fn main() {
 
     let governor_conf = GovernorConfigBuilder::default()
         .per_second(1)
-        .burst_size(60)
+        .burst_size(30)
         .finish()
         .unwrap();
     let governor_layer = GovernorLayer {
         config: std::sync::Arc::new(governor_conf),
     };
 
-    let app = api::router()
+    let app = api::router(is_production)
         .with_state(state)
         .layer(cors)
         .layer(governor_layer);

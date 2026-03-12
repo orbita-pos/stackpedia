@@ -15,11 +15,13 @@ use crate::db::{models::*, queries};
 use crate::middleware::session::{sign_token, Session};
 use crate::AppState;
 
-fn generate_recovery_code() -> String {
+fn generate_recovery_code() -> (String, String) {
     let mut rng = rand::thread_rng();
     let part1: u16 = rng.gen_range(0..=9999);
     let part2: u16 = rng.gen_range(0..=9999);
-    format!("STACK-{:04}-{:04}", part1, part2)
+    let code = format!("STACK-{:04}-{:04}", part1, part2);
+    let prefix = format!("STACK-{:04}", part1);
+    (code, prefix)
 }
 
 fn hash_recovery_code(code: &str) -> Result<String, StatusCode> {
@@ -37,11 +39,18 @@ fn verify_recovery_code(code: &str, hash: &str) -> bool {
         .is_some()
 }
 
-fn set_session_cookie(token: &str) -> String {
-    format!(
-        "stackpedia_session={}; Path=/; HttpOnly; SameSite=Lax",
-        token
-    )
+fn set_session_cookie(token: &str, is_production: bool) -> String {
+    if is_production {
+        format!(
+            "stackpedia_session={}; Path=/; HttpOnly; SameSite=Strict; Secure; Max-Age=2592000",
+            token
+        )
+    } else {
+        format!(
+            "stackpedia_session={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000",
+            token
+        )
+    }
 }
 
 type ApiError = (StatusCode, Json<ErrorResponse>);
@@ -58,8 +67,11 @@ pub async fn join(
     if nickname.is_empty() || nickname.len() > 30 {
         return Err(err(StatusCode::BAD_REQUEST, "nickname must be 1-30 chars"));
     }
+    if !nickname.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(err(StatusCode::BAD_REQUEST, "nickname may only contain a-z, 0-9, _ and -"));
+    }
 
-    let recovery_code = generate_recovery_code();
+    let (recovery_code, recovery_prefix) = generate_recovery_code();
     let hash = hash_recovery_code(&recovery_code)
         .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))?;
 
@@ -75,7 +87,7 @@ pub async fn join(
     }
 
     let user_id = Uuid::new_v4();
-    queries::insert_user(&state.pool, user_id, &nickname, &hash)
+    queries::insert_user(&state.pool, user_id, &nickname, &hash, Some(&recovery_prefix))
         .await
         .map_err(|e| {
             tracing::error!("insert_user: {}", e);
@@ -96,7 +108,7 @@ pub async fn join(
 
     response.headers_mut().insert(
         SET_COOKIE,
-        set_session_cookie(&token).parse().unwrap(),
+        set_session_cookie(&token, state.is_production).parse().unwrap(),
     );
 
     Ok(response)
@@ -111,11 +123,42 @@ pub async fn recover(
         return Err(err(StatusCode::BAD_REQUEST, "recovery_code is required"));
     }
 
-    // Check all users — recovery codes are hashed so we can't query by code.
-    let users = queries::get_all_users(&state.pool).await.map_err(|e| {
-        tracing::error!("get_all_users: {}", e);
-        err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-    })?;
+    // Validate format: STACK-DDDD-DDDD
+    let parts: Vec<&str> = code.split('-').collect();
+    if parts.len() != 3
+        || parts[0] != "STACK"
+        || parts[1].len() != 4
+        || parts[2].len() != 4
+        || !parts[1].chars().all(|c| c.is_ascii_digit())
+        || !parts[2].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid recovery code format"));
+    }
+
+    // Extract prefix (e.g. "STACK-1234" from "STACK-1234-5678") to narrow search
+    let prefix = format!("{}-{}", parts[0], parts[1]);
+
+    let users = if prefix.starts_with("STACK-") && prefix.len() >= 6 {
+        let mut users = queries::get_users_by_recovery_prefix(&state.pool, &prefix)
+            .await
+            .map_err(|e| {
+                tracing::error!("get_users_by_recovery_prefix: {}", e);
+                err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            })?;
+        // Fallback to full scan for pre-migration users with NULL prefix
+        if users.is_empty() {
+            users = queries::get_all_users(&state.pool).await.map_err(|e| {
+                tracing::error!("get_all_users: {}", e);
+                err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            })?;
+        }
+        users
+    } else {
+        queries::get_all_users(&state.pool).await.map_err(|e| {
+            tracing::error!("get_all_users: {}", e);
+            err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        })?
+    };
 
     for user in &users {
         if verify_recovery_code(&code, &user.recovery_code_hash) {
@@ -129,7 +172,7 @@ pub async fn recover(
 
             response.headers_mut().insert(
                 SET_COOKIE,
-                set_session_cookie(&token).parse().unwrap(),
+                set_session_cookie(&token, state.is_production).parse().unwrap(),
             );
 
             return Ok(response);

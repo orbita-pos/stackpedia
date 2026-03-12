@@ -1107,7 +1107,7 @@ pub async fn seed(
         let id = Uuid::new_v4();
         let recovery_hash = hash_code(&format!("SEED-{}", nickname))
             .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "hashing error"))?;
-        queries::insert_user(&state.pool, id, nickname, &recovery_hash)
+        queries::insert_user(&state.pool, id, nickname, &recovery_hash, None)
             .await
             .map_err(|e| {
                 tracing::error!("seed insert_user {}: {}", nickname, e);

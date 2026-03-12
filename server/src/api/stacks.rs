@@ -268,6 +268,8 @@ pub async fn update_stack(
         ));
     }
 
+    body.validate().map_err(|e| (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e })))?;
+
     // Track what changed
     let mut changes = Vec::new();
     if body.project_name.is_some() {

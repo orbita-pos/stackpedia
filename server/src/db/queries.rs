@@ -10,22 +10,24 @@ pub async fn insert_user(
     id: Uuid,
     nickname: &str,
     recovery_code_hash: &str,
+    recovery_prefix: Option<&str>,
 ) -> Result<UserRow, sqlx::Error> {
     sqlx::query_as::<_, UserRow>(
-        r#"INSERT INTO users (id, nickname, recovery_code_hash)
-           VALUES ($1, $2, $3)
-           RETURNING id, nickname, recovery_code_hash, created_at, sponsor_url"#,
+        r#"INSERT INTO users (id, nickname, recovery_code_hash, recovery_prefix)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, nickname, recovery_code_hash, created_at, sponsor_url, recovery_prefix"#,
     )
     .bind(id)
     .bind(nickname)
     .bind(recovery_code_hash)
+    .bind(recovery_prefix)
     .fetch_one(pool)
     .await
 }
 
 pub async fn get_user_by_id(pool: &PgPool, id: Uuid) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as::<_, UserRow>(
-        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url FROM users WHERE id = $1",
+        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url, recovery_prefix FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -34,7 +36,7 @@ pub async fn get_user_by_id(pool: &PgPool, id: Uuid) -> Result<Option<UserRow>, 
 
 pub async fn get_all_users(pool: &PgPool) -> Result<Vec<UserRow>, sqlx::Error> {
     sqlx::query_as::<_, UserRow>(
-        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url FROM users",
+        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url, recovery_prefix FROM users",
     )
     .fetch_all(pool)
     .await
@@ -42,10 +44,19 @@ pub async fn get_all_users(pool: &PgPool) -> Result<Vec<UserRow>, sqlx::Error> {
 
 pub async fn get_user_by_nickname(pool: &PgPool, nickname: &str) -> Result<Option<UserRow>, sqlx::Error> {
     sqlx::query_as::<_, UserRow>(
-        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url FROM users WHERE LOWER(nickname) = LOWER($1)",
+        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url, recovery_prefix FROM users WHERE LOWER(nickname) = LOWER($1)",
     )
     .bind(nickname)
     .fetch_optional(pool)
+    .await
+}
+
+pub async fn get_users_by_recovery_prefix(pool: &PgPool, prefix: &str) -> Result<Vec<UserRow>, sqlx::Error> {
+    sqlx::query_as::<_, UserRow>(
+        "SELECT id, nickname, recovery_code_hash, created_at, sponsor_url, recovery_prefix FROM users WHERE recovery_prefix = $1",
+    )
+    .bind(prefix)
+    .fetch_all(pool)
     .await
 }
 
@@ -74,6 +85,12 @@ pub async fn update_sponsor_url(pool: &PgPool, user_id: Uuid, sponsor_url: Optio
         .execute(pool)
         .await?;
     Ok(())
+}
+
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 // --- Stacks ---
@@ -232,7 +249,7 @@ pub async fn list_stacks(
         q = q.bind(tool_name.clone());
     }
     if let Some(ref search) = query.search {
-        q = q.bind(format!("%{}%", search));
+        q = q.bind(format!("%{}%", escape_like(search)));
     }
 
     q = q.bind(limit).bind(offset);

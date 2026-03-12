@@ -12,6 +12,7 @@ pub struct UserRow {
     pub recovery_code_hash: String,
     pub created_at: DateTime<Utc>,
     pub sponsor_url: Option<String>,
+    pub recovery_prefix: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -344,6 +345,39 @@ const VALID_SCALES: &[&str] = &["hobby", "hundreds", "thousands", "tens_of_thous
 const VALID_TOOL_CATEGORIES: &[&str] = &["frontend", "backend", "database", "hosting", "auth", "payments", "monitoring", "cdn", "email", "storage", "other"];
 const VALID_VERDICTS: &[&str] = &["love", "good", "meh", "regret"];
 
+fn validate_url(url: &str) -> Result<(), String> {
+    if !url.is_empty() {
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("url must start with http:// or https://".into());
+        }
+        if url.len() > 500 {
+            return Err("url must be max 500 chars".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_tools(tools: &[CreateToolInput]) -> Result<(), String> {
+    if tools.len() > 30 {
+        return Err("maximum 30 tools allowed".into());
+    }
+    for (i, tool) in tools.iter().enumerate() {
+        if tool.name.is_empty() || tool.name.len() > 100 {
+            return Err(format!("tools[{}].name must be 1-100 chars", i));
+        }
+        if !VALID_TOOL_CATEGORIES.contains(&tool.category.as_str()) {
+            return Err(format!("tools[{}].category must be one of: {}", i, VALID_TOOL_CATEGORIES.join(", ")));
+        }
+        if tool.why.is_empty() || tool.why.len() > 300 {
+            return Err(format!("tools[{}].why must be 1-300 chars", i));
+        }
+        if !VALID_VERDICTS.contains(&tool.verdict.as_str()) {
+            return Err(format!("tools[{}].verdict must be one of: {}", i, VALID_VERDICTS.join(", ")));
+        }
+    }
+    Ok(())
+}
+
 impl CreateStackRequest {
     pub fn validate(&self) -> Result<(), String> {
         if self.project_name.is_empty() || self.project_name.len() > 100 {
@@ -361,24 +395,54 @@ impl CreateStackRequest {
         if self.tools.is_empty() {
             return Err("at least one tool is required".into());
         }
+        if let Some(ref url) = self.url {
+            validate_url(url)?;
+        }
+        validate_tools(&self.tools)?;
         if let Some(ref lessons) = self.lessons {
             if lessons.len() > 500 {
                 return Err("lessons must be max 500 chars".into());
             }
         }
-        for (i, tool) in self.tools.iter().enumerate() {
-            if tool.name.is_empty() || tool.name.len() > 100 {
-                return Err(format!("tools[{}].name must be 1-100 chars", i));
+        Ok(())
+    }
+}
+
+impl UpdateStackRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(ref name) = self.project_name {
+            if name.is_empty() || name.len() > 100 {
+                return Err("project_name must be 1-100 chars".into());
             }
-            if !VALID_TOOL_CATEGORIES.contains(&tool.category.as_str()) {
-                return Err(format!("tools[{}].category must be one of: {}", i, VALID_TOOL_CATEGORIES.join(", ")));
+        }
+        if let Some(ref desc) = self.description {
+            if desc.is_empty() || desc.len() > 200 {
+                return Err("description must be 1-200 chars".into());
             }
-            if tool.why.is_empty() || tool.why.len() > 300 {
-                return Err(format!("tools[{}].why must be 1-300 chars", i));
+        }
+        if let Some(ref cat) = self.category {
+            if !VALID_CATEGORIES.contains(&cat.as_str()) {
+                return Err(format!("category must be one of: {}", VALID_CATEGORIES.join(", ")));
             }
-            if !VALID_VERDICTS.contains(&tool.verdict.as_str()) {
-                return Err(format!("tools[{}].verdict must be one of: {}", i, VALID_VERDICTS.join(", ")));
+        }
+        if let Some(ref scale) = self.scale {
+            if !VALID_SCALES.contains(&scale.as_str()) {
+                return Err(format!("scale must be one of: {}", VALID_SCALES.join(", ")));
             }
+        }
+        if let Some(ref url) = self.url {
+            validate_url(url)?;
+        }
+        if let Some(ref lessons) = self.lessons {
+            if lessons.len() > 500 {
+                return Err("lessons must be max 500 chars".into());
+            }
+        }
+        if let Some(ref tools) = self.tools {
+            if tools.is_empty() {
+                return Err("at least one tool is required".into());
+            }
+            validate_tools(tools)?;
         }
         Ok(())
     }

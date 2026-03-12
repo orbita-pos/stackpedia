@@ -12,8 +12,8 @@ pub mod tools;
 pub mod trending;
 pub mod users;
 
-pub fn router() -> Router<AppState> {
-    Router::new()
+pub fn router(is_production: bool) -> Router<AppState> {
+    let r = Router::new()
         // Auth
         .route("/api/join", post(auth::join))
         .route("/api/recover", post(auth::recover))
@@ -46,7 +46,12 @@ pub fn router() -> Router<AppState> {
         // Trending
         .route("/api/trending", get(trending::get_trending))
         // Stats
-        .route("/api/stats", get(tools::stats))
-        // Seed (dev only)
-        .route("/api/seed", post(seed::seed))
+        .route("/api/stats", get(tools::stats));
+
+    // Seed (dev only) — route only registered outside production
+    if !is_production {
+        r.route("/api/seed", post(seed::seed))
+    } else {
+        r
+    }
 }
